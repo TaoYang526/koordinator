@@ -17,11 +17,9 @@ limitations under the License.
 package quotaevaluate
 
 import (
-	corev1 "k8s.io/api/core/v1"
-	quotav1 "k8s.io/apiserver/pkg/quota/v1"
-
 	"github.com/koordinator-sh/koordinator/apis/extension"
 	"github.com/koordinator-sh/koordinator/apis/thirdparty/scheduler-plugins/pkg/apis/scheduling/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func GetQuotaAdmission(quota *v1alpha1.ElasticQuota) (corev1.ResourceList, error) {
@@ -31,7 +29,7 @@ func GetQuotaAdmission(quota *v1alpha1.ElasticQuota) (corev1.ResourceList, error
 	}
 
 	// admission is zero, return max
-	if quotav1.IsZero(admission) {
+	if len(admission) == 0 {
 		return quota.Spec.Max, nil
 	}
 
