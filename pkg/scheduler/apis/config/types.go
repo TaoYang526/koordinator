@@ -204,6 +204,9 @@ type ElasticQuotaArgs struct {
 
 	// EnableRuntimeQuota if true, use max instead of runtime for all checks.
 	EnableRuntimeQuota bool
+
+	// CustomLimiterKeys is expected to be configured with keys of custom limiters
+	CustomLimiterKeys []string
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

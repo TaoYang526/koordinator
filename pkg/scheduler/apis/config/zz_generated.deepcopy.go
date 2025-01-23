@@ -103,6 +103,11 @@ func (in *ElasticQuotaArgs) DeepCopyInto(out *ElasticQuotaArgs) {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
+	if in.CustomLimiterKeys != nil {
+		in, out := &in.CustomLimiterKeys, &out.CustomLimiterKeys
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 

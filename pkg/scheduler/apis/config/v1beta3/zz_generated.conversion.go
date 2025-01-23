@@ -203,6 +203,7 @@ func autoConvert_v1beta3_ElasticQuotaArgs_To_config_ElasticQuotaArgs(in *Elastic
 	if err := v1.Convert_Pointer_bool_To_bool(&in.EnableRuntimeQuota, &out.EnableRuntimeQuota, s); err != nil {
 		return err
 	}
+	out.CustomLimiterKeys = *(*[]string)(unsafe.Pointer(&in.CustomLimiterKeys))
 	return nil
 }
 
@@ -230,6 +231,7 @@ func autoConvert_config_ElasticQuotaArgs_To_v1beta3_ElasticQuotaArgs(in *config.
 	if err := v1.Convert_bool_To_Pointer_bool(&in.EnableRuntimeQuota, &out.EnableRuntimeQuota, s); err != nil {
 		return err
 	}
+	out.CustomLimiterKeys = *(*[]string)(unsafe.Pointer(&in.CustomLimiterKeys))
 	return nil
 }
 

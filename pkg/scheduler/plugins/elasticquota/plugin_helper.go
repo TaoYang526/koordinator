@@ -278,7 +278,8 @@ func getPostFilterState(cycleState *framework.CycleState) (*PostFilterState, err
 	return s, nil
 }
 
-func (g *Plugin) checkQuotaRecursive(curQuotaName string, quotaNameTopo []string, podRequest v1.ResourceList) *framework.Status {
+func (g *Plugin) checkQuotaRecursive(curQuotaName string, quotaNameTopo []string, podRequest v1.ResourceList,
+	recursiveState *core.CustomLimiterState) *framework.Status {
 	quotaInfo := g.groupQuotaManager.GetQuotaInfoByName(curQuotaName)
 	if quotaInfo == nil {
 		return framework.NewStatus(framework.Error, fmt.Sprintf("Could not find the elasticQuota %v, quotaNameTopo: %v", curQuotaName, quotaNameTopo))
@@ -292,11 +293,30 @@ func (g *Plugin) checkQuotaRecursive(curQuotaName string, quotaNameTopo []string
 			"quotaNameTopo: %v, runtime: %v, used: %v, pod's request: %v, exceedDimensions: %v", quotaNameTopo,
 			printResourceList(quotaUsedLimit), printResourceList(quotaUsed), printResourceList(podRequest), exceedDimensions))
 	}
+	// check custom limiter for parent quotas
+	if len(quotaNameTopo) > 1 {
+		if errStatus := g.checkByCustomLimiter(quotaInfo, podRequest, recursiveState); errStatus != nil {
+			return errStatus
+		}
+	}
 	if quotaInfo.ParentName != extension.RootQuotaName {
 		quotaNameTopo = append([]string{quotaInfo.ParentName}, quotaNameTopo...)
-		return g.checkQuotaRecursive(quotaInfo.ParentName, quotaNameTopo, podRequest)
+		return g.checkQuotaRecursive(quotaInfo.ParentName, quotaNameTopo, podRequest, recursiveState)
 	}
 	return framework.NewStatus(framework.Success, "")
+}
+
+func (g *Plugin) checkByCustomLimiter(quotaInfo *core.QuotaInfo, podRequest v1.ResourceList,
+	recursiveState *core.CustomLimiterState) *framework.Status {
+	for customKey, customLimiter := range g.customLimiters {
+		err := customLimiter.Check(quotaInfo, podRequest, recursiveState)
+		if err != nil {
+			return framework.NewStatus(framework.Unschedulable,
+				fmt.Sprintf("check failed for quota %s by custom-limiter %s: %v",
+					quotaInfo.Name, customKey, err))
+		}
+	}
+	return nil
 }
 
 func printResourceList(rl v1.ResourceList) string {

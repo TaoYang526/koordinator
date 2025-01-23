@@ -199,6 +199,9 @@ type ElasticQuotaArgs struct {
 
 	// EnableRuntimeQuota if false, use max instead of runtime for all checks.
 	EnableRuntimeQuota *bool `json:"enableRuntimeQuota,omitempty"`
+
+	// CustomLimiterKeys is expected to be configured with keys of custom limiters
+	CustomLimiterKeys []string `json:"customLimiterKeys,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

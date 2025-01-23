@@ -1368,7 +1368,15 @@ func TestGroupQuotaManager_DeleteOneGroup_UpdateQuota(t *testing.T) {
 	assert.Nil(t, gqm.quotaInfoMap["1"])
 }
 
-func NewGroupQuotaManagerForTest() *GroupQuotaManager {
+type GroupQuotaManagerOption func(*GroupQuotaManager)
+
+func WithCustomLimiter(customLimiters map[string]CustomLimiter) GroupQuotaManagerOption {
+	return func(gqm *GroupQuotaManager) {
+		gqm.customLimiters = customLimiters
+	}
+}
+
+func NewGroupQuotaManagerForTest(opts ...GroupQuotaManagerOption) *GroupQuotaManager {
 	quotaManager := &GroupQuotaManager{
 		totalResourceExceptSystemAndDefaultUsed: v1.ResourceList{},
 		totalResource:                           v1.ResourceList{},
@@ -1377,6 +1385,9 @@ func NewGroupQuotaManagerForTest() *GroupQuotaManager {
 		runtimeQuotaCalculatorMap:               make(map[string]*RuntimeQuotaCalculator),
 		scaleMinQuotaManager:                    NewScaleMinQuotaManager(),
 		quotaTopoNodeMap:                        make(map[string]*QuotaTopoNode),
+	}
+	for _, opt := range opts {
+		opt(quotaManager)
 	}
 	systemQuotaInfo := NewQuotaInfo(false, true, extension.SystemQuotaName, extension.RootQuotaName)
 	systemQuotaInfo.CalculateInfo.Max = v1.ResourceList{
@@ -1657,7 +1668,7 @@ func TestGroupQuotaManager_OnTerminatingPodAdd(t *testing.T) {
 }
 
 func TestNewGroupQuotaManager(t *testing.T) {
-	gqm := NewGroupQuotaManager("", createResourceList(100, 100), createResourceList(300, 300))
+	gqm := NewGroupQuotaManager("", createResourceList(100, 100), createResourceList(300, 300), nil)
 	assert.Equal(t, createResourceList(100, 100), gqm.GetQuotaInfoByName(extension.SystemQuotaName).GetMax())
 	assert.Equal(t, createResourceList(300, 300), gqm.GetQuotaInfoByName(extension.DefaultQuotaName).GetMax())
 	assert.True(t, gqm.scaleMinQuotaEnabled)
@@ -2180,7 +2191,7 @@ func TestGroupQuotaManager_UpdateQuotaInternalNoLock(t *testing.T) {
 	assert.Equal(t, 3, len(gqm.quotaInfoMap))
 
 	quota := CreateQuota("test1", extension.RootQuotaName, 64, 100, 50, 80, true, false)
-	quotaInfo := NewQuotaInfoFromQuota(quota)
+	quotaInfo := NewQuotaInfoFromQuota(nil, quota)
 
 	// quota not exist, add quota info
 	// rootQuota requests[0,0]
@@ -2219,7 +2230,7 @@ func TestGroupQuotaManager_UpdateQuotaInternalNoLock(t *testing.T) {
 	// rootQuota requests[100,100]
 	//   |-- test1 Max[200, 200]  Min[60,100] request[100,100]
 	quota = CreateQuota("test1", extension.RootQuotaName, 200, 200, 60, 100, true, false)
-	newQuotaInfo := NewQuotaInfoFromQuota(quota)
+	newQuotaInfo := NewQuotaInfoFromQuota(nil, quota)
 	gqm.updateQuotaInternalNoLock(newQuotaInfo, quotaInfo)
 	quotaInfo = gqm.getQuotaInfoByNameNoLock("test1")
 	assert.Equal(t, createResourceList(200, 200), quotaInfo.CalculateInfo.Max)
@@ -2263,4 +2274,74 @@ func TestGroupQuotaManager_UpdateQuotaTopoNodeNoLock(t *testing.T) {
 	assert.Equal(t, 2, len(gqm.quotaTopoNodeMap[extension.RootQuotaName].childGroupQuotaInfos))
 	assert.Equal(t, 0, len(gqm.quotaTopoNodeMap["test1"].childGroupQuotaInfos))
 	assert.Equal(t, 1, len(gqm.quotaTopoNodeMap["test2"].childGroupQuotaInfos))
+}
+
+func TestGroupQuotaManager_CustomLimiterMock(t *testing.T) {
+	gqm := NewGroupQuotaManagerForTest(WithCustomLimiter(map[string]CustomLimiter{
+		CustomKeyMock: &MockCustomLimiter{},
+	}))
+
+	// invalid limit should be ignored
+	q1 := CreateQuota("1", extension.RootQuotaName, 40, 40, 20, 20, false, false)
+	q1.Annotations[AnnotationKeyMockLimit] = `{`
+	err := gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	quotaInfo := gqm.GetQuotaInfoByName(q1.Name)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 0)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 0)
+
+	// invalid args should be ignored
+	q1.Annotations[AnnotationKeyMockLimit] = `{"cpu":20,"memory":20}`
+	q1.Annotations[AnnotationKeyMockArgs] = `invalid`
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	quotaInfo = gqm.GetQuotaInfoByName(q1.Name)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 0)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 0)
+
+	// valid
+	q1 = CreateQuota("1", extension.RootQuotaName, 40, 40, 20, 20, false, false)
+	q1.Annotations[AnnotationKeyMockLimit] = `{"cpu":20,"memory":20}`
+	q1.Annotations[AnnotationKeyMockArgs] = `{"ratio":0.5}`
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	quotaInfo = gqm.GetQuotaInfoByName(q1.Name)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 1)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 1)
+	assert.True(t, quotav1.Equals(quotaInfo.CalculateInfo.CustomLimits[CustomKeyMock],
+		createResourceList(20, 20)))
+	args, ok := quotaInfo.CalculateInfo.CustomArgsMap[CustomKeyMock].(*MockCustomArgs)
+	assert.True(t, ok)
+	assert.Equal(t, args.Ratio, 0.5)
+
+	// update limit
+	q1.Annotations[AnnotationKeyMockLimit] = `{"cpu":20,"memory":50}`
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 1)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 1)
+	assert.True(t, quotav1.Equals(quotaInfo.CalculateInfo.CustomLimits[CustomKeyMock],
+		createResourceList(20, 50)))
+
+	// update args
+	q1.Annotations[AnnotationKeyMockArgs] = `{"ratio":0.9}`
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	args, ok = quotaInfo.CalculateInfo.CustomArgsMap[CustomKeyMock].(*MockCustomArgs)
+	assert.True(t, ok)
+	assert.Equal(t, args.Ratio, 0.9)
+
+	// remove limit
+	delete(q1.Annotations, AnnotationKeyMockLimit)
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 0)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 1)
+
+	// remove args
+	delete(q1.Annotations, AnnotationKeyMockArgs)
+	err = gqm.UpdateQuota(q1, false)
+	assert.NoError(t, err)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomLimits), 0)
+	assert.Equal(t, len(quotaInfo.CalculateInfo.CustomArgsMap), 0)
 }

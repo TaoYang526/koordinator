@@ -60,9 +60,12 @@ type GroupQuotaManager struct {
 
 	// treeID is the quota tree id
 	treeID string
+	// customLimiters stores the enabled custom limiters
+	customLimiters map[string]CustomLimiter
 }
 
-func NewGroupQuotaManager(treeID string, systemGroupMax, defaultGroupMax v1.ResourceList) *GroupQuotaManager {
+func NewGroupQuotaManager(treeID string, systemGroupMax, defaultGroupMax v1.ResourceList,
+	customLimiters map[string]CustomLimiter) *GroupQuotaManager {
 	quotaManager := &GroupQuotaManager{
 		totalResourceExceptSystemAndDefaultUsed: v1.ResourceList{},
 		totalResource:                           v1.ResourceList{},
@@ -73,6 +76,7 @@ func NewGroupQuotaManager(treeID string, systemGroupMax, defaultGroupMax v1.Reso
 		scaleMinQuotaManager:                    NewScaleMinQuotaManager(),
 		nodeResourceMap:                         make(map[string]struct{}),
 		treeID:                                  treeID,
+		customLimiters:                          customLimiters,
 	}
 	// only default GroupQuotaManager need system quota and deault quota.
 	if treeID == "" {
@@ -235,9 +239,14 @@ func (gqm *GroupQuotaManager) updateGroupDeltaUsedNoLock(quotaName string, delta
 	}
 
 	defer gqm.scopedLockForQuotaInfo(curToAllParInfos)()
+	quotaChainSharedState := NewCustomLimiterState()
 	for i := 0; i < allQuotaInfoLen; i++ {
 		quotaInfo := curToAllParInfos[i]
 		quotaInfo.addUsedNonNegativeNoLock(delta, deltaNonPreemptibleUsed, i == selfQuotaIndex)
+		// update custom used by custom limiters
+		for _, customLimiter := range gqm.customLimiters {
+			customLimiter.UpdateUsed(quotaInfo, delta, quotaChainSharedState)
+		}
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.ElasticQuotaGuaranteeUsage) {
@@ -392,7 +401,7 @@ func (gqm *GroupQuotaManager) UpdateQuota(quota *v1alpha1.ElasticQuota, isDelete
 	if isDelete {
 		return gqm.deleteQuotaNoLock(quota)
 	} else {
-		newQuotaInfo := NewQuotaInfoFromQuota(quota)
+		newQuotaInfo := NewQuotaInfoFromQuota(gqm.customLimiters, quota)
 		// update the local quotaInfo's crd
 		if localQuotaInfo, exist := gqm.quotaInfoMap[quotaName]; exist {
 			// if the quotaMeta doesn't change, only runtime/used/request/min/max/sharedWeight change causes update,
@@ -418,7 +427,7 @@ func (gqm *GroupQuotaManager) UpdateQuotaInfo(quota *v1alpha1.ElasticQuota) {
 	gqm.hierarchyUpdateLock.Lock()
 	defer gqm.hierarchyUpdateLock.Unlock()
 
-	newQuotaInfo := NewQuotaInfoFromQuota(quota)
+	newQuotaInfo := NewQuotaInfoFromQuota(gqm.customLimiters, quota)
 	gqm.quotaInfoMap[quota.Name] = newQuotaInfo
 }
 
@@ -1042,6 +1051,37 @@ func (gqm *GroupQuotaManager) updateQuotaInternalNoLock(newQuotaInfo, oldQuotaIn
 		gqm.doUpdateOneGroupSharedWeightNoLock(newQuotaInfo.Name, newQuotaInfo.CalculateInfo.SharedWeight)
 	}
 
+	// configurations of custom limiters changed
+	customLimitersConfUpdated := false
+	for key := range gqm.customLimiters {
+		newLimit, newArgs := newQuotaInfo.CalculateInfo.CustomLimits[key],
+			newQuotaInfo.CalculateInfo.CustomArgsMap[key]
+		var oldLimit v1.ResourceList
+		var oldArgs CustomArgs
+		if oldQuotaInfo != nil {
+			oldLimit, oldArgs = oldQuotaInfo.CalculateInfo.CustomLimits[key],
+				oldQuotaInfo.CalculateInfo.CustomArgsMap[key]
+		}
+		if !quotav1.Equals(oldLimit, newLimit) || !CustomArgsDeepEqual(oldArgs, newArgs) {
+			customLimitersConfUpdated = true
+			break
+		}
+	}
+	if customLimitersConfUpdated {
+		newCustomLimits, newCustomArgs := make(CustomResourceLists), make(CustomArgsMap)
+		for key := range gqm.customLimiters {
+			newLimit, newArgs := newQuotaInfo.CalculateInfo.CustomLimits[key],
+				newQuotaInfo.CalculateInfo.CustomArgsMap[key]
+			if newLimit != nil {
+				newCustomLimits[key] = newLimit
+			}
+			if newArgs != nil {
+				newCustomArgs[key] = newArgs
+			}
+		}
+		gqm.doUpdateOneGroupCustomLimitsAndArgsNoLock(newQuotaInfo.Name, newCustomLimits, newCustomArgs)
+		klog.V(5).Infof("configuration of custom-limiters updated for quota %v", newQuotaInfo.Name)
+	}
 }
 
 func (gqm *GroupQuotaManager) updateQuotaTopoNodeNoLock(newQuotaInfo, oldQuotaInfo *QuotaInfo) {
@@ -1160,6 +1200,12 @@ func (gqm *GroupQuotaManager) doUpdateOneGroupSharedWeightNoLock(quotaName strin
 	quotaInfo.setSharedWeightNoLock(newSharedWeight)
 
 	gqm.updateOneGroupSharedWeightNoLock(quotaInfo)
+}
+
+func (gqm *GroupQuotaManager) doUpdateOneGroupCustomLimitsAndArgsNoLock(quotaName string,
+	customLimits map[string]v1.ResourceList, customArgs CustomArgsMap) {
+	quotaInfo := gqm.getQuotaInfoByNameNoLock(quotaName)
+	quotaInfo.CalculateInfo.CustomLimits, quotaInfo.CalculateInfo.CustomArgsMap = customLimits, customArgs
 }
 
 func shouldBeIgnored(pod *v1.Pod) bool {

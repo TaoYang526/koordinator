@@ -65,7 +65,7 @@ func TestQuotaInfo_AddRequestNonNegativeNoLock(t *testing.T) {
 
 func TestNewQuotaInfoFromQuota(t *testing.T) {
 	eQ := createElasticQuota()
-	quotaInfo := NewQuotaInfoFromQuota(eQ)
+	quotaInfo := NewQuotaInfoFromQuota(nil, eQ)
 	if !quotaInfo.AllowLentResource ||
 		!quotaInfo.IsParent ||
 		quotaInfo.Name != "testQuota" ||
