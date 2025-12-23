@@ -136,7 +136,7 @@ func TestScore(t *testing.T) {
 		{
 			name:      "no reservation matched on the node",
 			pod:       &corev1.Pod{},
-			wantScore: framework.MinNodeScore,
+			wantScore: framework.MaxNodeScore, // Nodes without pre-allocated pods get MaxNodeScore (100)
 		},
 		{
 			// TODO: should optimize the case
@@ -145,7 +145,7 @@ func TestScore(t *testing.T) {
 			reservations: []*schedulingv1alpha1.Reservation{
 				reservation2C4G.DeepCopy(),
 			},
-			wantScore: framework.MinNodeScore,
+			wantScore: framework.MaxNodeScore, // Nodes without pre-allocated pods get MaxNodeScore (100)
 		},
 		{
 			name: "reservation matched and pod has part empty resource requests",

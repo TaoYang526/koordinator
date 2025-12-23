@@ -189,6 +189,10 @@ type ReservationNominator interface {
 	NominatePreAllocation(ctx context.Context, cycleState *framework.CycleState, rInfo *ReservationInfo, nodeName string) (*corev1.Pod, *framework.Status)
 	AddNominatedPreAllocation(rInfo *ReservationInfo, nodeName string, pod *corev1.Pod)
 	GetNominatedPreAllocation(rInfo *ReservationInfo, nodeName string) *corev1.Pod
+	// AddNominatedPreAllocations nominates multiple pre-allocatable pods for a reservation.
+	AddNominatedPreAllocations(rInfo *ReservationInfo, nodeName string, pods []*corev1.Pod)
+	// GetNominatedPreAllocations returns the nominated pre-allocatable pods for a reservation.
+	GetNominatedPreAllocations(rInfo *ReservationInfo, nodeName string) []*corev1.Pod
 }
 
 const (

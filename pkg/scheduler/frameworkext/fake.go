@@ -150,6 +150,7 @@ type FakeNominator struct {
 	nominatedPodToNode map[types.UID]map[string]types.UID
 	reservations       map[types.UID]*ReservationInfo
 	preAllocatable     map[types.UID]map[string]*corev1.Pod
+	preAllocatables    map[types.UID]map[string][]*corev1.Pod
 	// nominatedReservePod is map keyed by nodeName, value is the nominated reservations
 	nominatedReservePod       map[string][]*framework.PodInfo
 	nominatedReservePodToNode map[types.UID]string
@@ -162,6 +163,7 @@ func NewFakeReservationNominator() *FakeNominator {
 		nominatedReservePodToNode: map[types.UID]string{},
 		reservations:              map[types.UID]*ReservationInfo{},
 		preAllocatable:            map[types.UID]map[string]*corev1.Pod{},
+		preAllocatables:           map[types.UID]map[string][]*corev1.Pod{},
 	}
 }
 
@@ -309,6 +311,37 @@ func (nm *FakeNominator) GetNominatedPreAllocation(rInfo *ReservationInfo, nodeN
 
 func (nm *FakeNominator) deletePreAllocation(pod *corev1.Pod) {
 	delete(nm.preAllocatable, pod.UID)
+	delete(nm.preAllocatables, pod.UID)
+}
+
+func (nm *FakeNominator) RemoveNominatedPreAllocation(pod *corev1.Pod) {
+	nm.lock.Lock()
+	defer nm.lock.Unlock()
+	nm.deletePreAllocation(pod)
+}
+
+func (nm *FakeNominator) AddNominatedPreAllocations(rInfo *ReservationInfo, nodeName string, pods []*corev1.Pod) {
+	if !rInfo.IsPreAllocation() || len(pods) == 0 {
+		return
+	}
+	nm.lock.Lock()
+	defer nm.lock.Unlock()
+	nodeToPreAllocatables := nm.preAllocatables[rInfo.UID()]
+	if nodeToPreAllocatables == nil {
+		nodeToPreAllocatables = map[string][]*corev1.Pod{}
+		nm.preAllocatables[rInfo.UID()] = nodeToPreAllocatables
+	}
+	nodeToPreAllocatables[nodeName] = pods
+}
+
+func (nm *FakeNominator) GetNominatedPreAllocations(rInfo *ReservationInfo, nodeName string) []*corev1.Pod {
+	nm.lock.RLock()
+	defer nm.lock.RUnlock()
+	nodeToPreAllocatables := nm.preAllocatables[rInfo.UID()]
+	if nodeToPreAllocatables == nil {
+		return nil
+	}
+	return nodeToPreAllocatables[nodeName]
 }
 
 // GetNominatedNodeForReservePod returns the node name that the reserve pod is nominated to.

@@ -109,10 +109,43 @@ func (pl *Plugin) PreScore(ctx context.Context, cycleState *framework.CycleState
 
 func (pl *Plugin) Score(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, nodeName string) (int64, *framework.Status) {
 	if reservationutil.IsReservePod(pod) {
-		return framework.MinNodeScore, nil
+		// For Reserve Pod, score based on number of pre-allocatable pods needed
+		// Fewer pods needed means higher score
+		isPreAllocation := reservationutil.IsReservePodPreAllocation(pod)
+		if !isPreAllocation {
+			return framework.MinNodeScore, nil
+		}
+
+		state := getStateData(cycleState)
+		nodeRState := state.nodeReservationStates[nodeName]
+		if nodeRState == nil || len(nodeRState.selectedPreAllocatablePods) == 0 {
+			return framework.MaxNodeScore, nil
+		}
+
+		numPreAllocatedPods := 1
+		if enableMultiplePAPods(state.rInfo) {
+			numPreAllocatedPods = len(nodeRState.selectedPreAllocatablePods)
+		}
+
+		// Calculate score: fewer selected pre-allocatable pods = higher score
+		score := framework.MaxNodeScore / int64(1+numPreAllocatedPods)
+		return score, nil
 	}
 
 	state := getStateData(cycleState)
+
+	// For normal pod scheduling: check pre-allocated pods on the node
+	// Nodes with pre-allocated pods get lower score to encourage unallocated resource release
+	if !reservationutil.IsReservePod(pod) {
+		nodeRState := state.nodeReservationStates[nodeName]
+		if nodeRState != nil && len(nodeRState.preAllocatablePods) > 0 {
+			// Nodes with pre-allocated pods get score 0
+			// This makes them less preferred, helping to release unallocated resources faster
+			return framework.MinNodeScore, nil
+		}
+		// Nodes without pre-allocated pods: continue with normal reservation scoring logic
+		// If no reservation is matched, they get score 100 (MaxNodeScore)
+	}
 
 	if state.preferredNode == nodeName {
 		return mostPreferredScore, nil
@@ -120,6 +153,10 @@ func (pl *Plugin) Score(ctx context.Context, cycleState *framework.CycleState, p
 
 	reservationInfo := pl.handle.GetReservationNominator().GetNominatedReservation(pod, nodeName)
 	if reservationInfo == nil {
+		// For normal pod without reservation and without pre-allocated pods: give high score
+		if !reservationutil.IsReservePod(pod) {
+			return framework.MaxNodeScore, nil
+		}
 		return framework.MinNodeScore, nil
 	}
 	for _, v := range state.nodeReservationStates[nodeName].matchedOrIgnored {
